@@ -115,6 +115,11 @@ class GoodputMonitor:
     # Google Cloud Monitoring configurations.
     self._gcp_options = gcp_options
     self._metrics_sender = None
+
+    # If step deviation is not included, disable GCP step deviation metrics.
+    if not self._include_step_deviation:
+      self._gcp_options.enable_gcp_step_deviation_metrics = False
+
     if (
         self._gcp_options.enable_gcp_goodput_metrics
         or self._gcp_options.enable_gcp_step_deviation_metrics
