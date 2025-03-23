@@ -852,7 +852,7 @@ class GoodputCalculator:
         return job_end_time - job_start_time
       # If the job's end time is missing then job has not yet completed, use
       # current time to compute total job time.
-      return self._current_query_time - job_start_time
+      return self._current_query_time.timestamp() - job_start_time
     # The the job's start time is missing so the total job time cannot be
     # calculated. Caller of this function should raise an error if this happens.
     return 0.0
