@@ -414,11 +414,6 @@ class GoodputCalculator:
     self._last_disruption_time = None
     self._last_disrupted_step = None
     self._current_query_time = datetime.datetime.now(datetime.timezone.utc)
-    # Counter for the number of times get_job_goodput is called.
-    self._counter = 0
-    # Threshold for the number of times get_job_goodput can be called before
-    # we flush the cache and recalculate to maintain data integrity.
-    self.THRESHOLD = 100
 
   def _get_total_productive_and_unproductive_time(
       self,
@@ -1367,9 +1362,6 @@ class GoodputCalculator:
       self,
   ) -> dict[str, dict[Union[BadputType, GoodputType], float]]:
     """Method to get the productive and non-productive time with breakdown of the job computed until now."""
-    # Update the counter to check if we have reached the threshold.
-    self._counter += 1
-
     goodput_info = self._goodput_cache.get_goodput_info()
     if goodput_info is None:
       logger.warning(
@@ -1414,15 +1406,6 @@ class GoodputCalculator:
     # future when we have more granular breakdown of productive time.
 
     total_productive_time = {GoodputType.TOTAL: productive_training_time}
-    # Clear the cache if the counter reaches the threshold.
-    # Clear the cache during training and not eval
-    # TODO(rishabhmanoj): Remove this once we instrument EVAL logs.
-    if self._current_entries and self._counter >= self.THRESHOLD:
-      self._counter = 0
-      print('Clearing cache')
-      # Clears the cached_entries, goodput_info and last_entry_timestamp.
-      self._goodput_cache.clear_cache()
-    print('Counter: ', self._counter)
     return {
         'goodput_time_dict': total_productive_time,
         'badput_time_dict': total_unproductive_time,
