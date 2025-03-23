@@ -33,7 +33,11 @@ class GoodputCache:
     # If the last entry in the cache is the same as the first entry in the
     # current entries, then the ignore the first current entry and only update
     # the cache with the remaining entries.
-    if self._cached_entries and self._cached_entries[-1] == entries[0]:
+    if (
+        entries
+        and self._cached_entries
+        and self._cached_entries[-1] == entries[0]
+    ):
       self._cached_entries.extend(entries[1:])
     else:
       self._cached_entries.extend(entries)
