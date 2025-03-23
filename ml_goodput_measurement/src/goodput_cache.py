@@ -30,17 +30,7 @@ class GoodputCache:
 
   def update_cached_entries(self, entries: list[Any]):
     """Updated the cached entries."""
-    # If the last entry in the cache is the same as the first entry in the
-    # current entries, then the ignore the first current entry and only update
-    # the cache with the remaining entries.
-    if (
-        entries
-        and self._cached_entries
-        and self._cached_entries[-1] == entries[0]
-    ):
-      self._cached_entries.extend(entries[1:])
-    else:
-      self._cached_entries.extend(entries)
+    self._cached_entries.extend(entries)
     self.update_last_entry_timestamp()
     self.update_job_start_time()
     self.update_job_end_time()
