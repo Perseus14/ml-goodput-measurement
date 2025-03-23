@@ -414,6 +414,11 @@ class GoodputCalculator:
     self._last_disruption_time = None
     self._last_disrupted_step = None
     self._current_query_time = datetime.datetime.now(datetime.timezone.utc)
+    # Counter for the number of times get_job_goodput is called.
+    self._counter = 0
+    # Threshold for the number of times get_job_goodput can be called before
+    # we flush the cache and recalculate to maintain data integrity.
+    self.THRESHOLD = 100
 
   def _get_total_productive_and_unproductive_time(
       self,
@@ -819,8 +824,10 @@ class GoodputCalculator:
     # TODO(@rishabhmanoj, @dishaw): Recheck logic here.
     # After the last step is recorded and before the current_query_time, there
     # is no guarantee that remaining time is productive activity. If it is
-    # productive activity, it will be recorded in the next step. Commenting out for
-    # now.
+    # productive activity, it will be recorded in the next step.
+    # For Eval, this logic messes up the productive_total_time so commenting
+    # out for now. This can lead to spikes in OTHER badput time but should
+    # normalise in the subsequent calls
     if job_end_time is not None:
       productive_training_time += job_end_time - step_start_data[last_step]
     '''
@@ -1012,11 +1019,14 @@ class GoodputCalculator:
       ValueError if productive training time is invalid.
     """
     s = datetime.datetime.now(datetime.timezone.utc)
+    # Update the counter to check if we have reached the threshold.
+    self._counter += 1
+
     # Update the logs used to compute Goodput.
     self._update_log_entries()
 
     total_job_time = self._get_total_job_time()
-    print(f'Total Job Time: {total_job_time}')
+    print('Total job time: ', total_job_time)
     # No calculations can be made if total job time is zero. This can happen if
     # logs for the job are not present, sent to an invalid location or contain
     # bad data. Raise a ValueError if this happens.
@@ -1028,8 +1038,11 @@ class GoodputCalculator:
     productive_training_time, total_unproductive_time, last_step = (
         self._get_total_productive_and_unproductive_time()
     )
-    print(f'Productive Training Time: {productive_training_time}')
-    print(f'Total Unproductive Time: {[(k.name, v) for k, v in total_unproductive_time.items()]}')
+    print('Productive training time: ', productive_training_time)
+    print(
+        'Total unproductive time: ',
+        [(k.name, v) for k, v in total_unproductive_time.items()],
+    )
     if (
         productive_training_time < 0.0
         or productive_training_time > total_job_time
@@ -1059,11 +1072,12 @@ class GoodputCalculator:
         - productive_training_time
         - _get_total_unproductive_time(total_unproductive_time)
     )
-    print(f'OTHER: {other_unproductive_time}')
+
     if other_unproductive_time < 0.0:
       raise ValueError(
-          'Other unproductive time is invalid. Please fix the logging entries.'
+          'Productive training time exceeds total job time. Please fix the logging entries.'
       )
+    print('OTHER: ', other_unproductive_time)
     total_unproductive_time[BadputType.OTHER] = other_unproductive_time
 
     # Return a tuple of calculated Goodput & Badput of the job till now and the
@@ -1095,7 +1109,16 @@ class GoodputCalculator:
     # TODO(rishabhmanoj): Remove this once we instrument EVAL logs.
     if not self._current_entries:
       self._goodput_cache._last_entry_timestamp = self._current_query_time
-    print(f'Function Time: {datetime.datetime.now(datetime.timezone.utc) - s}')
+
+    # Clear the cache if the counter reaches the threshold.
+    # Clear the cache during training and not eval
+    # TODO(rishabhmanoj): Remove this once we instrument EVAL logs.
+    if self._current_entries and self._counter >= self.THRESHOLD:
+      self._counter = 0
+      # Clears the cached_entries, goodput_info and last_entry_timestamp.
+      print('Clearing cache')
+      self._goodput_cache.clear_cache()
+    print('Function Time: ', datetime.datetime.now(datetime.timezone.utc) - s)
     return job_goodput, job_badput_breakdown, last_step
 
   def get_job_goodput_interval(
