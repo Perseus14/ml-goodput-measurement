@@ -1019,9 +1019,6 @@ class GoodputCalculator:
       ValueError if productive training time is invalid.
     """
     s = datetime.datetime.now(datetime.timezone.utc)
-    # Update the counter to check if we have reached the threshold.
-    self._counter += 1
-
     # Update the logs used to compute Goodput.
     self._update_log_entries()
 
@@ -1110,14 +1107,6 @@ class GoodputCalculator:
     if not self._current_entries:
       self._goodput_cache._last_entry_timestamp = self._current_query_time
 
-    # Clear the cache if the counter reaches the threshold.
-    # Clear the cache during training and not eval
-    # TODO(rishabhmanoj): Remove this once we instrument EVAL logs.
-    if self._current_entries and self._counter >= self.THRESHOLD:
-      self._counter = 0
-      # Clears the cached_entries, goodput_info and last_entry_timestamp.
-      print('Clearing cache')
-      self._goodput_cache.clear_cache()
     print('Function Time: ', datetime.datetime.now(datetime.timezone.utc) - s)
     return job_goodput, job_badput_breakdown, last_step
 
@@ -1378,6 +1367,8 @@ class GoodputCalculator:
       self,
   ) -> dict[str, dict[Union[BadputType, GoodputType], float]]:
     """Method to get the productive and non-productive time with breakdown of the job computed until now."""
+    # Update the counter to check if we have reached the threshold.
+    self._counter += 1
 
     goodput_info = self._goodput_cache.get_goodput_info()
     if goodput_info is None:
@@ -1423,7 +1414,15 @@ class GoodputCalculator:
     # future when we have more granular breakdown of productive time.
 
     total_productive_time = {GoodputType.TOTAL: productive_training_time}
-
+    # Clear the cache if the counter reaches the threshold.
+    # Clear the cache during training and not eval
+    # TODO(rishabhmanoj): Remove this once we instrument EVAL logs.
+    if self._current_entries and self._counter >= self.THRESHOLD:
+      self._counter = 0
+      print('Clearing cache')
+      # Clears the cached_entries, goodput_info and last_entry_timestamp.
+      self._goodput_cache.clear_cache()
+    print('Counter: ', self._counter)
     return {
         'goodput_time_dict': total_productive_time,
         'badput_time_dict': total_unproductive_time,
