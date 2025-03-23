@@ -192,10 +192,10 @@ class GoodputMonitor:
         )
       self._writer.flush()
 
-  def _query_and_upload_goodput_to_tensorboard_and_gcp(self):
-    """Queries and uploads goodput data to Tensorboard and GCP Monitoring."""
+  def _query_and_upload_goodput_to_tensorboard(self):
+    """Queries and uploads goodput data to Tensorboard."""
     try:
-      job_goodput, job_badput_breakdown, last_step, goodput_details = (
+      job_goodput, job_badput_breakdown, last_step = (
           self._goodput_calculator.get_job_goodput(
               include_badput_breakdown=self._include_badput_breakdown
           )
@@ -203,8 +203,6 @@ class GoodputMonitor:
       self._write_goodput_data_to_tensorboard(
           job_goodput, job_badput_breakdown, last_step
       )
-      if self._gcp_options.enable_gcp_goodput_metrics:
-        self._send_goodput_metrics_to_gcp(goodput_details)
     except Exception as e:  # pylint: disable=broad-exception-caught
       logger.error(
           'Error while querying and uploading goodput to Tensorboard. This'
@@ -267,10 +265,14 @@ class GoodputMonitor:
       )
 
   def _query_and_upload_goodput(self):
-    """Queries and uploads goodput data to Tensorboard and GCP Monitoring."""
+    """Queries and uploads goodput data to Tensorboard."""
     while not self._termination_event.is_set():
       time.sleep(self._upload_interval)
-      self._query_and_upload_goodput_to_tensorboard_and_gcp()
+      self._query_and_upload_goodput_to_tensorboard()
+      if self._gcp_options.enable_gcp_goodput_metrics:
+        self._send_goodput_metrics_to_gcp(
+            self._goodput_calculator.get_job_goodput_details()
+        )
 
   def start_goodput_uploader(self):
     """Starts the goodput uploader thread."""
