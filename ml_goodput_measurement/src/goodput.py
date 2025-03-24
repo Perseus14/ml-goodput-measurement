@@ -133,7 +133,7 @@ class _CloudLogger:
       end_time: The end time of the query window.
 
     Returns:
-      Filtered entries in ascending order of timestamp [start_time, end_time).
+      Filtered entries in ascending order of timestamp.
     """
     import google.cloud.logging  # pylint: disable=g-import-not-at-top
 
@@ -413,7 +413,7 @@ class GoodputCalculator:
     self._gcm_last_recorded_timestamp = None
     self._last_disruption_time = None
     self._last_disrupted_step = None
-    self._current_query_time = datetime.datetime.now(datetime.timezone.utc)
+    self._current_query_time = None
 
   def _get_total_productive_and_unproductive_time(
       self,
@@ -596,43 +596,6 @@ class GoodputCalculator:
         self._interval_entries if interval_query else self._current_entries
     )
     self._number_of_interruptions = 0
-
-    if (
-        not self._interval_entries
-        and len(entries_to_process) <= 1
-    ):
-      # The first entry in the list is the last entry from the previous call.
-      # If there is only one entry, it means that the job hasn't produced any
-      # new logs and therefore we can skip the processing.
-
-      # TODO(rishabhmanoj): Recheck and Update Logic later.
-      # Current Logic: Assuming that no new logs imply that job
-      # is currently engaged in some unknown productive activity (like EVAL in
-      # AXLearn), productive_training_time will be current_query_time -
-      # self._goodput_cache._last_entry_timestamp.
-
-      # TODO(rishabhmanoj): After AXLearn EVAL is completed, the job will resume
-      # training and will produce training logs. In this case, the first new
-      # training log will unfortunately be excluded in the
-      # get_segment_productive_and_unproductive_time function which means that
-      # one step_count will be ignored during the calculation. This will be
-      # fixed in the next CL when EVAL events are logged.
-
-      # Update current_entries to empty list as we don't want duplicates in
-      # self.goodput_cache._cached_entries.
-      self._current_entries = []
-      if self._goodput_cache._last_entry_timestamp is not None:
-        productive_training_time = (
-            self._current_query_time.timestamp()
-            - self._goodput_cache._last_entry_timestamp.timestamp()
-        )
-        return (
-            productive_training_time,
-            {},
-            0,
-        )
-      return 0.0, {}, 0
-
     for payload in entries_to_process:
       if _JOB_START_TIME in payload:
         # Keep track of the latest start to compute badput due to disruption.
@@ -816,16 +779,8 @@ class GoodputCalculator:
         segment_unproductive_time, total_unproductive_time
     )
 
-    # TODO(@rishabhmanoj, @dishaw): Recheck logic here.
-    # After the last step is recorded and before the current_query_time, there
-    # is no guarantee that remaining time is productive activity. If it is
-    # productive activity, it will be recorded in the next step.
-    # For Eval, this logic messes up the productive_total_time so commenting
-    # out for now. This can lead to spikes in OTHER badput time but should
-    # normalise in the subsequent calls
     if job_end_time is not None:
       productive_training_time += job_end_time - step_start_data[last_step]
-    '''
     elif (
         interval_query
         and self._interval_end_time
@@ -835,10 +790,12 @@ class GoodputCalculator:
           self._interval_end_time.timestamp() - step_start_data[last_step]
       )
     elif not interval_query:
-      productive_training_time += (
-          self._current_query_time.timestamp() - step_start_data[last_step]
-      )
-    '''
+      end_time = get_timestamp_from_log_entry(self._current_entries[-1])
+      if end_time and end_time.timestamp() >= step_start_data[last_step]:
+        productive_training_time += (
+            end_time.timestamp() - step_start_data[last_step]
+        )
+
     # Remove blocking checkpoint manager save time from productive time.
     productive_training_time -= checkpoint_manager_save_badput
 
@@ -848,41 +805,24 @@ class GoodputCalculator:
     return productive_training_time, total_unproductive_time, last_step
 
   def _get_total_job_time(self) -> float:
-    """Helper function to compute the total job runtime."""
-    if self._goodput_cache._job_start_time:
-      return (
-          self._current_query_time.timestamp()
-          - self._goodput_cache._job_start_time.timestamp()
-      )
-    return self._get_current_job_time()
-
-  def _get_cached_total_job_time(self) -> float:
-    """Helper function to retrieve cached total job runtime if available."""
-    if not self._goodput_cache.is_cache_empty():
-      goodput_info = self._goodput_cache._goodput_info
-      if goodput_info:
-        return goodput_info.total_elapsed_time_since_start
-    return 0.0
-
-  def _get_current_job_time(self) -> float:
     """Helper function to compute the current job runtime.
 
     Returns:
       The job's total runtime computed based on the last retrieved logs.
     """
-    # Find the last entry's timestamp as current window's start
-    # (present if entries are cached).
-    start_time = self._goodput_cache._last_entry_timestamp
+    # Find the job's original start time from the cache.
+    start_time = self._goodput_cache.get_job_start_time()
     if start_time:
-      end_time = self._goodput_cache._job_end_time
-      if end_time is not None:
-        return end_time.timestamp() - start_time.timestamp()
+      end_time = self._goodput_cache.get_job_end_time()
       # If the job's end time is missing then job has not yet completed, use
       # current query time to compute total job time.
-      return (
-          self._current_query_time.timestamp()
-          - start_time.timestamp()
-      )
+      if end_time is None:
+        end_time = (
+            self._current_query_time
+            if self._current_query_time
+            else datetime.datetime.now(datetime.timezone.utc)
+        )
+      return end_time.timestamp() - start_time.timestamp()
 
     # De-serealize job start and end times from cloud logging entries. These
     # will be used to compute total runtime of the job.
@@ -900,32 +840,26 @@ class GoodputCalculator:
       if job_end_time is not None:
         return job_end_time - job_start_time
       # If the job's end time is missing then job has not yet completed, use
-      # the current query time to compute total job time.
-      return self._current_query_time.timestamp() - job_start_time
+      # current query time to compute total job time.
+      job_end_time = (
+          self._current_query_time
+          if self._current_query_time
+          else datetime.datetime.now(datetime.timezone.utc)
+      )
+      return job_end_time.timestamp() - job_start_time
     # The the job's start time is missing so the total job time cannot be
     # calculated. Caller of this function should raise an error if this happens.
     return 0.0
 
   def _update_log_entries(self):
     """Helper function to update the log entries."""
-    self._current_query_time = datetime.datetime.now(datetime.timezone.utc)
     if not self._goodput_cache.is_cache_empty():
-      # Cloud logging entries can have latency issues which might cause us to
-      # miss certain logs.
-      # Rather than fetching all logs from previous query time to current query
-      # time, we will fetch all logs from the last entry's timestamp to current
-      # query time. This will make sure we don't miss any logs.
-      last_entry_timestamp = self._goodput_cache._last_entry_timestamp
+      last_entry_timestamp = self._goodput_cache.get_last_entry_timestamp()
       self._current_entries = self._cloud_logger.read_cloud_logging_entries(
           last_entry_timestamp, self._current_query_time
       )
     else:
-      # If the cache is empty, then we will use the beginning of time as the
-      # start time to retrieve all the entries from the beginning of the job.
-      self._current_entries = self._cloud_logger.read_cloud_logging_entries(
-          datetime.datetime.min.replace(tzinfo=datetime.timezone.utc),
-          self._current_query_time,
-      )
+      self._current_entries = self._cloud_logger.read_cloud_logging_entries()
 
   def _get_interval_log_entries(
       self, start_time: datetime.datetime, end_time: datetime.datetime
@@ -1013,12 +947,13 @@ class GoodputCalculator:
       cannot be computed.
       ValueError if productive training time is invalid.
     """
-    s = datetime.datetime.now(datetime.timezone.utc)
+    # Update current query time.
+    self._current_query_time = datetime.datetime.now(datetime.timezone.utc)
+
     # Update the logs used to compute Goodput.
     self._update_log_entries()
 
     total_job_time = self._get_total_job_time()
-    print('Total job time: ', total_job_time)
     # No calculations can be made if total job time is zero. This can happen if
     # logs for the job are not present, sent to an invalid location or contain
     # bad data. Raise a ValueError if this happens.
@@ -1029,11 +964,6 @@ class GoodputCalculator:
       )
     productive_training_time, total_unproductive_time, last_step = (
         self._get_total_productive_and_unproductive_time()
-    )
-    print('Productive training time: ', productive_training_time)
-    print(
-        'Total unproductive time: ',
-        [(k.name, v) for k, v in total_unproductive_time.items()],
     )
     if (
         productive_training_time < 0.0
@@ -1064,12 +994,6 @@ class GoodputCalculator:
         - productive_training_time
         - _get_total_unproductive_time(total_unproductive_time)
     )
-
-    if other_unproductive_time < 0.0:
-      raise ValueError(
-          'Productive training time exceeds total job time. Please fix the logging entries.'
-      )
-    print('OTHER: ', other_unproductive_time)
     total_unproductive_time[BadputType.OTHER] = other_unproductive_time
 
     # Return a tuple of calculated Goodput & Badput of the job till now and the
@@ -1093,16 +1017,6 @@ class GoodputCalculator:
             last_updated_timestamp=datetime.datetime.now(datetime.timezone.utc),
         )
     )
-
-    # If self._current_entries is empty, then we have not received any new logs
-    # since the last call to get_job_goodput. In this case, we will update the
-    # last entry timestamp to the current query time to avoid inflating the job
-    # time and productive training time.
-    # TODO(rishabhmanoj): Remove this once we instrument EVAL logs.
-    if not self._current_entries:
-      self._goodput_cache._last_entry_timestamp = self._current_query_time
-
-    print('Function Time: ', datetime.datetime.now(datetime.timezone.utc) - s)
     return job_goodput, job_badput_breakdown, last_step
 
   def get_job_goodput_interval(
@@ -1139,6 +1053,9 @@ class GoodputCalculator:
       cannot be computed.
       ValueError if productive training or unproductive time is invalid.
     """
+
+    # Update current query time.
+    self._current_query_time = datetime.datetime.now(datetime.timezone.utc)
 
     # Get the logs for the interval and validate the interval window.
     self._get_interval_log_entries(interval_start, interval_end)
@@ -1207,6 +1124,9 @@ class GoodputCalculator:
     Returns:
       A dictionary of step deviation for each step.
     """
+    # Update current query time.
+    self._current_query_time = datetime.datetime.now(datetime.timezone.utc)
+
     # Get the log entries.
     self._update_log_entries()
     # Compute step times from the log entries.
@@ -1362,6 +1282,7 @@ class GoodputCalculator:
       self,
   ) -> dict[str, dict[Union[BadputType, GoodputType], float]]:
     """Method to get the productive and non-productive time with breakdown of the job computed until now."""
+
     goodput_info = self._goodput_cache.get_goodput_info()
     if goodput_info is None:
       logger.warning(
@@ -1406,6 +1327,7 @@ class GoodputCalculator:
     # future when we have more granular breakdown of productive time.
 
     total_productive_time = {GoodputType.TOTAL: productive_training_time}
+
     return {
         'goodput_time_dict': total_productive_time,
         'badput_time_dict': total_unproductive_time,
